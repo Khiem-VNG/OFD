@@ -228,7 +228,7 @@ if __name__ == "__main__":
     cid_cass = str(rows[0].customer_id) if rows else str(uuid.uuid4())
 
     func1_get_restaurants_with_menu(district="Quan 1", category="main")
-    func2_restaurant_stats_by_month(2024, 11)
+    func2_restaurant_stats_by_month(2026, 2)
     func3_customer_history_cassandra(cid_cass)
     func4_redis_realtime()
     verify_consistency()

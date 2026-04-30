@@ -137,7 +137,7 @@ def gen_orders_mongo(customers, restaurants, rest_menu, n=600):
         discount = random.choice([0,0,0,10000,20000])
         total    = subtotal + fee - discount
         is_cancel = random.random() < 0.08
-        created   = fake.date_time_between("-6m", "now")
+        created = fake.date_time_between("-180d", "-1d")
         if is_cancel:
             history = [{"status":"PLACED","timestamp":created},
                        {"status":"CANCELLED","timestamp":created+timedelta(minutes=3)}]
@@ -276,10 +276,16 @@ def gen_redis_data(orders, restaurants):
             "restaurant_id": str(o["restaurant_id"])
         })
         pipe.expire(key, 7200)
-    r.delete("ranking:restaurants")
-    for rest in restaurants:
-        pipe.zadd("ranking:restaurants", {str(rest["_id"]): rest["avg_rating"]})
+    
     pipe.execute()
+
+    # Ranking: đọc từ DB sau khi avg_rating đã được update
+    r.delete("ranking:restaurants")
+    pipe2 = r.pipeline()
+    for rest in db.restaurants.find({}, {"avg_rating": 1}):
+        pipe2.zadd("ranking:restaurants", {str(rest["_id"]): rest["avg_rating"]})
+    pipe2.execute()
+
     print(f"✅ Redis: {len(active[:50])} order status cached, restaurant ranking set")
 
 
