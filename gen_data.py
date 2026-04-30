@@ -226,11 +226,11 @@ def gen_cassandra_activity(orders):
     count = 0
     sampled = random.sample(orders, k=min(len(orders), 400))
     for o in sampled:
-        cid = uuid.UUID(str(o["customer_id"]))
-        rid = uuid.UUID(str(o["restaurant_id"]))
+        cid = uuid.uuid5(uuid.NAMESPACE_OID, str(o["customer_id"]))
+        rid = uuid.uuid5(uuid.NAMESPACE_OID, str(o["restaurant_id"]))
         base = o["created_at"]
         for _ in range(random.randint(2, 5)):
-            mid = uuid.UUID(str(random.choice(o["items"])["menu_item_id"]))
+            mid = uuid.uuid5(uuid.NAMESPACE_OID, str(random.choice(o["items"])["menu_item_id"]))
             ts  = base - timedelta(minutes=random.randint(1,20))
             cass.execute(insert_activity, (cid, ts, uuid.uuid4(),
                          random.choice(event_types), rid, mid, None))
@@ -251,8 +251,8 @@ def gen_cassandra_order_history(orders, restaurants):
     """)
     count = 0
     for o in orders:
-        cid     = uuid.UUID(str(o["customer_id"]))
-        oid     = uuid.UUID(str(o["_id"]))
+        cid = uuid.uuid5(uuid.NAMESPACE_OID, str(o["customer_id"]))
+        oid = uuid.uuid5(uuid.NAMESPACE_OID, str(o["_id"]))
         rname   = rest_map.get(str(o["restaurant_id"]), "Unknown")
         summary = ", ".join([f"{i['name']} x{i['quantity']}" for i in o["items"][:3]])
         cass.execute(insert_history, (
