@@ -57,17 +57,30 @@ def update_order_status(order_id, new_status):
 
 
 def view_order_by_status(restaurant_id, status):
-    orders = db.orders.find({"restaurant_id": ObjectId(restaurant_id), "status": status})
+    orders = db.orders.find({"restaurant_id": ObjectId(restaurant_id), "current_status": status})
     print(f"📋 Orders with status '{status}' for restaurant ID: {restaurant_id}")
     for order in orders:
         print(f"- Order ID: {order['_id']}, Customer ID: {order['customer_id']}, Total: {order['total_amount']}")
 
+def get_total_income(restaurant_id):
+    pipeline = [
+        {"$match": {"restaurant_id": ObjectId(restaurant_id), "current_status": "COMPLETED"}},
+        {"$group": {"_id": None, "total_income": {"$sum": "$total_amount"}}}
+    ]
+    result = list(db.orders.aggregate(pipeline))
+    total_income = result[0]["total_income"] if result else 0
+    print(f"💰 Total income for restaurant ID: {restaurant_id} is ${total_income:.2f}")
+    return total_income
+
 
 if __name__ == "__main__":
     # function testing
-    restaurant_id = '69f35fae4390d582454e6f4e'
+    restaurant_id = '69f35fae4390d582454e6f72'
 
-    #view all orders
     view_orders(restaurant_id)
+    #view_order_by_status(restaurant_id, "preparing")
+
+    get_total_income(restaurant_id)
+
     
     
