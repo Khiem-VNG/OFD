@@ -31,14 +31,24 @@ def update_menu(restaurant_id, menu_items):
 
 def view_orders(restaurant_id):
     orders = db.orders.find({"restaurant_id": ObjectId(restaurant_id)})
-    print(f"📋 Orders for restaurant ID: {restaurant_id}")
+    
+    print(f"\n📋 Orders for restaurant ID: {restaurant_id}")
+    print("=" * 50) # Creates a double-line border
+    
     for order in orders:
-        print(f"- Order ID: {order['_id']}, Customer ID: {order['customer_id']}, Total: {order['total_amount']}, Status: {order['current_status']}")
+        print(f"Order ID:    {order['_id']}")
+        print(f"Customer ID: {order['customer_id']}")
+        print(f"Items:       {order['items']}")
+        print(f"Total:       {order['total_amount']}")
+        print(f"Status:      {order['current_status']}")
+        print("-" * 50) 
+        
 
+    
 def update_order_status(order_id, new_status):
     result = db.orders.update_one(
         {"_id": ObjectId(order_id)},
-        {"$set": {"status": new_status}}
+        {"$set": {"current_status": new_status}}
     )
     if result.modified_count > 0:
         print(f"✅ Order ID: {order_id} status updated to '{new_status}'")
