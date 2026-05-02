@@ -73,14 +73,26 @@ def get_total_income(restaurant_id):
     return total_income
 
 
+def get_reviews(restaurant_id):
+    reviews = db.reviews.find({"restaurant_id": ObjectId(restaurant_id)})
+    print(f"📋 Reviews for restaurant ID: {restaurant_id}")
+    for review in reviews:
+        print(f"- Customer ID: {review['customer_id']}")
+        print(f" Overall Rating: {review['overall_rating']}/5")
+        print(f" Food Quality: {review['food_quality_rating']}/5")
+        print(f" Delivery Time: {review['delivery_speed_rating']}/5")
+        print(f" Comment: {review['comment']}")
+
 if __name__ == "__main__":
     # function testing
     restaurant_id = '69f35fae4390d582454e6f72'
 
-    view_orders(restaurant_id)
+    #view_orders(restaurant_id)
     #view_order_by_status(restaurant_id, "preparing")
 
-    get_total_income(restaurant_id)
+    #get_total_income(restaurant_id)
+
+    get_reviews(restaurant_id)
 
     
     
