@@ -5,7 +5,7 @@ Tăng volume data để benchmark có ý nghĩa:
   - customers:   300   (tăng từ 150)
   - restaurants:  50   (giữ nguyên)
   - menu_items:  ~400  (giữ nguyên tỉ lệ)
-  - orders:    10 000  (tăng từ 600  → benchmark target)
+  - orders:    13_000 (tăng từ 600  → benchmark target)
   - reviews:    ~4 500 (45% completed orders)
   - Cassandra activity: tất cả orders (thay vì sample 400)
 
@@ -20,6 +20,7 @@ from pymongo import MongoClient
 from cassandra.cluster import Cluster
 from cassandra import ConsistencyLevel
 from cassandra.concurrent import execute_concurrent_with_args
+from neo4j import GraphDatabase
 import redis
 import random
 import uuid
@@ -32,13 +33,14 @@ mongo = MongoClient("mongodb://admin:admin123@localhost:27017")
 db    = mongo["food_delivery"]
 cass  = Cluster(["localhost"], port=9042).connect("food_delivery")
 r     = redis.Redis(host="localhost", port=6379, db=0, decode_responses=True)
+neo4j_driver = GraphDatabase.driver("bolt://localhost:7687", auth=("neo4j", "password123"))
 
 # ============================================================
 # CONFIG — chỉnh ở đây nếu muốn nhiều/ít hơn
 # ============================================================
 N_CUSTOMERS   = 300
 N_RESTAURANTS = 50
-N_ORDERS      = 13_000  # ← số đơn hàng target
+N_ORDERS      = 13_000   # ← số đơn hàng target
 BATCH_SIZE    = 500       # MongoDB batch insert size
 CASS_CONCURR  = 200       # Cassandra concurrent statements
 
@@ -317,7 +319,6 @@ def gen_reviews(completed_orders):
     print(f"\n✅ MongoDB reviews: {inserted:,}")
     return inserted
 
-
 def update_ratings():
     for doc in db.reviews.aggregate([
         {"$group": {
@@ -449,6 +450,136 @@ def gen_cassandra_order_history(orders, restaurants):
 
 
 # ============================================================
+# NEO4J — đọc từ MongoDB, tạo graph relationships
+#
+# Schema (khớp với user_activity_graph.py):
+#   (:User)-[:VIEWED   {count, last_viewed}  ]->(:Restaurant)
+#   (:User)-[:ORDERED  {count, last_ordered} ]->(:Food)
+#   (:User)-[:RATED    {rating, updated_at}  ]->(:Food)
+#   (:Food)-[:BELONGS_TO                     ]->(:Restaurant)
+#
+# Dùng UNWIND batch query thay vì từng session.run()
+# → nhanh hơn ~10x so với gọi riêng lẻ
+# ============================================================
+NEO4J_BATCH = 500   # số records mỗi lần UNWIND
+
+def _neo4j_run_batch(session, query, rows):
+    """Chạy 1 Cypher UNWIND query với batch rows."""
+    session.run(query, rows=rows)
+
+
+def seed_neo4j(orders, reviews, restaurants):
+    """
+    Đọc data từ biến in-memory (đã gen từ MongoDB) và tạo Neo4j graph.
+    Không query lại MongoDB — dùng thẳng list objects đã có.
+    """
+    print(f"\n  Seeding Neo4j từ {len(orders):,} orders + {len(reviews):,} reviews...")
+
+    # Xóa toàn bộ graph cũ để tránh duplicate
+    with neo4j_driver.session() as session:
+        session.run("MATCH (n) DETACH DELETE n")
+    print("  🗑️  Đã xóa graph cũ")
+
+    # ----------------------------------------------------------
+    # 1. VIEWED: User →[:VIEWED]→ Restaurant
+    #    Nguồn: mỗi completed order = customer đã "xem" nhà hàng đó
+    #    Dùng MERGE để gộp nhiều lần xem vào 1 relationship (count++)
+    # ----------------------------------------------------------
+    viewed_query = """
+    UNWIND $rows AS row
+    MERGE (u:User {id: row.customer_id})
+    MERGE (r:Restaurant {id: row.restaurant_id, name: row.restaurant_name})
+    MERGE (u)-[v:VIEWED]->(r)
+      ON CREATE SET v.count = 1,        v.last_viewed = datetime()
+      ON MATCH  SET v.count = v.count + 1, v.last_viewed = datetime()
+    """
+    rest_name_map = {str(r["_id"]): r["name"] for r in restaurants}
+    viewed_rows   = [
+        {
+            "customer_id":    str(o["customer_id"]),
+            "restaurant_id":  str(o["restaurant_id"]),
+            "restaurant_name": rest_name_map.get(str(o["restaurant_id"]), "Unknown"),
+        }
+        for o in orders
+    ]
+    written = 0
+    with neo4j_driver.session() as session:
+        for i in range(0, len(viewed_rows), NEO4J_BATCH):
+            session.run(viewed_query, rows=viewed_rows[i:i + NEO4J_BATCH])
+            written += min(NEO4J_BATCH, len(viewed_rows) - i)
+            progress(written, len(viewed_rows), f"{written:,}/{len(viewed_rows):,} VIEWED")
+    print(f"\n  ✅ VIEWED relationships: {written:,}")
+
+    # ----------------------------------------------------------
+    # 2. ORDERED: User →[:ORDERED]→ Food  +  Food →[:BELONGS_TO]→ Restaurant
+    #    Nguồn: items bên trong mỗi order
+    # ----------------------------------------------------------
+    ordered_query = """
+    UNWIND $rows AS row
+    MERGE (u:User {id: row.customer_id})
+    MERGE (f:Food {id: row.food_id, name: row.food_name})
+    MERGE (r:Restaurant {id: row.restaurant_id})
+    MERGE (f)-[:BELONGS_TO]->(r)
+    MERGE (u)-[o:ORDERED]->(f)
+      ON CREATE SET o.count = row.qty,           o.last_ordered = datetime()
+      ON MATCH  SET o.count = o.count + row.qty, o.last_ordered = datetime()
+    """
+    ordered_rows = []
+    for o in orders:
+        for item in o["items"]:
+            ordered_rows.append({
+                "customer_id":   str(o["customer_id"]),
+                "food_id":       str(item["menu_item_id"]),
+                "food_name":     item["name"],
+                "restaurant_id": str(o["restaurant_id"]),
+                "qty":           item["quantity"],
+            })
+
+    written = 0
+    with neo4j_driver.session() as session:
+        for i in range(0, len(ordered_rows), NEO4J_BATCH):
+            session.run(ordered_query, rows=ordered_rows[i:i + NEO4J_BATCH])
+            written += min(NEO4J_BATCH, len(ordered_rows) - i)
+            progress(written, len(ordered_rows), f"{written:,}/{len(ordered_rows):,} ORDERED+BELONGS_TO")
+    print(f"\n  ✅ ORDERED relationships: {written:,}")
+
+    # ----------------------------------------------------------
+    # 3. RATED: User →[:RATED {rating}]→ Food
+    #    Nguồn: reviews.item_ratings (từng món trong review)
+    # ----------------------------------------------------------
+    rated_query = """
+    UNWIND $rows AS row
+    MERGE (u:User {id: row.customer_id})
+    MERGE (f:Food {id: row.food_id})
+    MERGE (u)-[rt:RATED]->(f)
+      SET rt.rating     = row.rating,
+          rt.updated_at = datetime()
+    """
+    rated_rows = []
+    for rv in reviews:
+        for ir in rv.get("item_ratings", []):
+            rated_rows.append({
+                "customer_id": str(rv["customer_id"]),
+                "food_id":     str(ir["menu_item_id"]),
+                "rating":      ir["rating"],
+            })
+
+    written = 0
+    with neo4j_driver.session() as session:
+        for i in range(0, len(rated_rows), NEO4J_BATCH):
+            session.run(rated_query, rows=rated_rows[i:i + NEO4J_BATCH])
+            written += min(NEO4J_BATCH, len(rated_rows) - i)
+            progress(written, len(rated_rows), f"{written:,}/{len(rated_rows):,} RATED")
+    print(f"\n  ✅ RATED relationships: {written:,}")
+
+    # Stats
+    with neo4j_driver.session() as session:
+        nodes = session.run("MATCH (n) RETURN count(n) AS c").single()["c"]
+        rels  = session.run("MATCH ()-[r]->() RETURN count(r) AS c").single()["c"]
+    print(f"  📊 Neo4j tổng: {nodes:,} nodes | {rels:,} relationships")
+
+
+# ============================================================
 # REDIS
 # ============================================================
 def gen_redis_data(orders, restaurants):
@@ -497,7 +628,7 @@ if __name__ == "__main__":
     print(f"  Completed orders: {len(completed):,} ({len(completed)/len(orders)*100:.0f}%)")
 
     db.reviews.drop()
-    gen_reviews(completed)
+    reviews = gen_reviews(completed)   # ← giữ lại list reviews để seed Neo4j
     update_ratings()
     gen_daily_stats()
 
@@ -505,16 +636,27 @@ if __name__ == "__main__":
     gen_cassandra_order_history(orders, restaurants)
     gen_redis_data(orders, restaurants)
 
+    # Đọc reviews từ MongoDB (gen_reviews trả về số int, cần list thực)
+    reviews_list = list(db.reviews.find({}, {"customer_id":1, "restaurant_id":1, "item_ratings":1}))
+    seed_neo4j(orders, reviews_list, restaurants)
+
     # Summary
     elapsed = time.perf_counter() - t0
+    with neo4j_driver.session() as s:
+        neo_nodes = s.run("MATCH (n) RETURN count(n) AS c").single()["c"]
+        neo_rels  = s.run("MATCH ()-[r]->() RETURN count(r) AS c").single()["c"]
+
     print(f"\n{'='*50}")
     print(f"🎉 HOÀN TẤT trong {elapsed:.1f}s")
     print(f"{'='*50}")
     print(f"  MongoDB:")
-    print(f"    customers            : {db.customers.count_documents({}):>8,}")
-    print(f"    restaurants          : {db.restaurants.count_documents({}):>8,}")
-    print(f"    menu_items           : {db.menu_items.count_documents({}):>8,}")
-    print(f"    orders               : {db.orders.count_documents({}):>8,}")
-    print(f"    reviews              : {db.reviews.count_documents({}):>8,}")
-    print(f"    restaurant_daily_stats: {db.restaurant_daily_stats.count_documents({}):>7,}")
+    print(f"    customers             : {db.customers.count_documents({}):>8,}")
+    print(f"    restaurants           : {db.restaurants.count_documents({}):>8,}")
+    print(f"    menu_items            : {db.menu_items.count_documents({}):>8,}")
+    print(f"    orders                : {db.orders.count_documents({}):>8,}")
+    print(f"    reviews               : {db.reviews.count_documents({}):>8,}")
+    print(f"    restaurant_daily_stats: {db.restaurant_daily_stats.count_documents({}):>8,}")
     print(f"  Cassandra + Redis: đã insert ✅")
+    print(f"  Neo4j:")
+    print(f"    nodes                 : {neo_nodes:>8,}")
+    print(f"    relationships         : {neo_rels:>8,}")
