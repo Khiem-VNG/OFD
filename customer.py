@@ -6,6 +6,12 @@ from cassandra.cluster import Cluster
 import redis
 from bson import ObjectId
 from datetime import datetime
+from user_activity_graph import (
+    log_view_restaurant,
+    log_order_food,
+    log_review
+)
+
 
 # ============================================================
 # KẾT NỐI
@@ -244,6 +250,11 @@ def show_restaurant_detail(restaurant):
 
         # Log activity vào Cassandra
         log_activity_cassandra("VIEW_RESTAURANT", restaurant_id=restaurant["_id"])
+        log_view_restaurant(
+            current_customer["_id"],
+            restaurant["_id"]
+        )
+
 
         # Reviews — MongoDB
         divider("ĐÁNH GIÁ GẦN ĐÂY  [MongoDB]")
@@ -425,6 +436,13 @@ def checkout(restaurant):
 
             # Log ORDER_PLACED vào Cassandra activity
             log_activity_cassandra("ORDER_PLACED", restaurant_id=restaurant["_id"])
+            for item in order["items"]:
+                log_order_food(
+                    current_customer["_id"],
+                    item["menu_item_id"],
+                    restaurant["_id"]
+                )
+
 
             cart.clear()
             clear()
@@ -685,6 +703,14 @@ def write_review(order):
 
     # Lưu review vào MongoDB
     db.reviews.insert_one(review)
+    for item in item_ratings:
+        log_review(
+            current_customer["_id"],
+            item["menu_item_id"],
+            item["rating"]
+        )
+
+
     print(f"\n  🍃 [MongoDB] Review đã lưu")
 
     # Cập nhật avg_rating — MongoDB atomic

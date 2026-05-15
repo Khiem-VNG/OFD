@@ -36,7 +36,21 @@ services:
       - redis_data:/data
     command: redis-server --appendonly yes
 
+  neo4j:
+    image: neo4j:5
+    container_name: food_neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: neo4j/password123
+    volumes:
+      - neo4j_data:/data
+
+
 volumes:
   mongodb_data:
   cassandra_data:
   redis_data:
+  neo4j_data:
+
