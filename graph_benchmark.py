@@ -509,14 +509,12 @@ def run_benchmarks(runs=5, customer_index=0):
 
     for db_name, stat in q1_stats.items():
         print_stat(db_name, stat, is_winner=(db_name == w))
-    print(f"\n  {GREEN}→ Winner: {BOLD}{w}{RESET}{GREEN} — {'Neo4j native graph traversal' if w=='Neo4j' else 'Document/time-series lookup'}{RESET}")
 
     # ----------------------------------------------------------
     # Q2
     # ----------------------------------------------------------
     header("Q2 · Restaurant Popularity Score  (aggregation)")
-    print(f"  {DIM}Use case: tính điểm nổi bật từ review + order graph{RESET}")
-    print(f"  {DIM}MongoDB: $group aggregation — đây là HOME TURF của Mongo{RESET}\n")
+    print(f"  {DIM}Use case: tính điểm nổi bật từ review + order graph{RESET}\n")
 
     r2_neo4j = q2_neo4j(rest_str, runs)
     r2_mongo  = q2_mongo(rest_oid, runs)
@@ -528,15 +526,13 @@ def run_benchmarks(runs=5, customer_index=0):
 
     for db_name, stat in q2_stats.items():
         print_stat(db_name, stat, is_winner=(db_name == w2))
-    print(f"\n  {GREEN}→ Winner: {BOLD}{w2}{RESET}{GREEN} — {'Aggregation trực tiếp trên documents' if w2=='MongoDB' else 'Graph-native aggregation'}{RESET}")
 
     # ----------------------------------------------------------
     # Q3
     # ----------------------------------------------------------
     header("Q3 · Customer Activity Profile  (fan-out graph vs time-series)")
     print(f"  {DIM}Use case: tổng hợp hành vi VIEWED / ORDERED / RATED của 1 customer{RESET}")
-    print(f"  {DIM}Neo4j: 3 relationship types từ 1 User node{RESET}")
-    print(f"  {DIM}Cassandra: native time-series, partition by customer_id (HOME TURF){RESET}\n")
+    print(f"  {DIM}Neo4j: 3 relationship types từ 1 User node{RESET}\n")
 
     r3_neo4j = q3_neo4j(cust_str, runs)
     r3_cass   = q3_cassandra(cust_oid, runs)
@@ -548,16 +544,13 @@ def run_benchmarks(runs=5, customer_index=0):
 
     for db_name, stat in q3_stats.items():
         print_stat(db_name, stat, is_winner=(db_name == w3))
-    print(f"\n  {GREEN}→ Winner: {BOLD}{w3}{RESET}{GREEN} — "
-          f"{'Time-series native, O(1) partition lookup' if w3=='Cassandra' else 'Graph aggregation trên 3 rel types' if w3=='Neo4j' else 'Document find + sort'}{RESET}")
 
     # ----------------------------------------------------------
     # Q4
     # ----------------------------------------------------------
-    header("Q4 · Collaborative Filtering  (Neo4j STRENGTH — 4-hop)")
+    header("Q4 · Collaborative Filtering  (4-hop)")
     print(f"  {DIM}Use case: 'Nhà hàng bạn chưa thử, nhưng người giống bạn thích'{RESET}")
-    print(f"  {DIM}Neo4j: User→ORDERED→Food←ORDERED←SimilarUser→Food→BELONGS_TO→Restaurant{RESET}")
-    print(f"  {DIM}Cassandra: N/A — không hỗ trợ cross-partition JOIN{RESET}\n")
+    print(f"  {DIM}Neo4j: User→ORDERED→Food←ORDERED←SimilarUser→Food→BELONGS_TO→Restaurant{RESET}\n")
 
     r4_neo4j = q4_neo4j(cust_str, runs)
     r4_mongo  = q4_mongo(cust_oid, runs)
@@ -570,17 +563,13 @@ def run_benchmarks(runs=5, customer_index=0):
     print_stat("Neo4j",   r4_neo4j, is_winner=(w4 == "Neo4j"))
     print_stat("MongoDB", r4_mongo, is_winner=(w4 == "MongoDB"))
     print(f"    {'Cassandra':<12}  N/A — cross-partition JOIN không được hỗ trợ")
-    print(f"\n  {GREEN}→ Winner: {BOLD}{w4}{RESET}{GREEN} — "
-          f"{'Graph traversal 4-hop, native relationship' if w4=='Neo4j' else 'Multi-stage $lookup pipeline'}{RESET}")
 
     # ----------------------------------------------------------
     # Q5
     # ----------------------------------------------------------
     header("Q5 · Top Rated Foods per Restaurant  (RATED relationship)")
     print(f"  {DIM}Use case: món ngon nhất nhà hàng tính từ graph rating{RESET}")
-    print(f"  {DIM}Neo4j: Restaurant←BELONGS_TO←Food←RATED←User  (2-hop native){RESET}")
-    print(f"  {DIM}MongoDB: $unwind item_ratings + $group (join thủ công){RESET}")
-    print(f"  {DIM}Cassandra: N/A — không aggregate cross-partition{RESET}\n")
+    print(f"  {DIM}Neo4j: Restaurant←BELONGS_TO←Food←RATED←User  (2-hop native){RESET}\n")
 
     r5_neo4j = q5_neo4j(rest_str, runs)
     r5_mongo  = q5_mongo(rest_oid, runs)
@@ -593,23 +582,14 @@ def run_benchmarks(runs=5, customer_index=0):
     print_stat("Neo4j",   r5_neo4j, is_winner=(w5 == "Neo4j"))
     print_stat("MongoDB", r5_mongo, is_winner=(w5 == "MongoDB"))
     print(f"    {'Cassandra':<12}  N/A — cross-partition aggregation không được hỗ trợ")
-    print(f"\n  {GREEN}→ Winner: {BOLD}{w5}{RESET}{GREEN} — "
-          f"{'Graph 2-hop, avg rating native' if w5=='Neo4j' else 'MongoDB $unwind + $group trên embedded array'}{RESET}")
 
     # ----------------------------------------------------------
     # SUMMARY TABLE
     # ----------------------------------------------------------
     header("TỔNG KẾT")
-    print(f"  {'Query':<10} {'Neo4j':>10} {'MongoDB':>10} {'Cassandra':>12}  {'Winner':<12} {'Lý do'}")
-    print(f"  {'-'*10} {'-'*10} {'-'*10} {'-'*12}  {'-'*12} {'-'*32}")
+    print(f"  {'Query':<10} {'Neo4j':>10} {'MongoDB':>10} {'Cassandra':>12}  {'Winner':<12}")
+    print(f"  {'-'*10} {'-'*10} {'-'*10} {'-'*12}  {'-'*12}")
 
-    reasons = {
-        "Q1": "3-hop: User→Food←User",
-        "Q2": "Food←RATED + BELONGS_TO→Rest",
-        "Q3": "Time-series vs graph fan-out",
-        "Q4": "4-hop collaborative filter",
-        "Q5": "RATED→Food→Restaurant 2-hop",
-    }
     for qname, stats in results.items():
         neo = f"{stats['Neo4j']['mean']:7.2f}ms"
         mdb = f"{stats['MongoDB']['mean']:7.2f}ms"
@@ -623,18 +603,8 @@ def run_benchmarks(runs=5, customer_index=0):
             cmp["Cassandra"] = stats["Cassandra"]
         w   = winner_label(cmp)
         wc  = GREEN if w == "Neo4j" else (YELLOW if w == "MongoDB" else CYAN)
-        print(f"  {qname:<10} {neo:>10} {mdb:>10} {cas:>12}  {wc}{w:<12}{RESET} {reasons[qname]}")
+        print(f"  {qname:<10} {neo:>10} {mdb:>10} {cas:>12}  {wc}{w:<12}{RESET}")
 
-    print(f"\n  {DIM}Schema Neo4j (user_activity_graph.py):{RESET}")
-    print(f"  {DIM}  (:User)-[:VIEWED   {{count}}     ]->(:Restaurant){RESET}")
-    print(f"  {DIM}  (:User)-[:ORDERED  {{count}}     ]->(:Food){RESET}")
-    print(f"  {DIM}  (:User)-[:RATED    {{rating}}    ]->(:Food){RESET}")
-    print(f"  {DIM}  (:Food)-[:BELONGS_TO            ]->(:Restaurant){RESET}")
-    print(f"\n  {DIM}Nhận xét:{RESET}")
-    print(f"  {DIM}• Neo4j thắng khi query có từ 3+ hop (Q1, Q4) hoặc dùng RATED graph (Q5){RESET}")
-    print(f"  {DIM}• MongoDB thắng ở aggregation đơn giản và document lookup (Q2, Q3){RESET}")
-    print(f"  {DIM}• Cassandra thắng ở time-series append-only (Q3 activity log){RESET}")
-    print(f"  {DIM}• Cassandra KHÔNG làm được JOIN → N/A ở Q4, Q5{RESET}")
     print()
 
 

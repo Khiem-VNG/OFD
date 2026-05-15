@@ -41,15 +41,6 @@ def print_result(label, stats):
           f"median={stats['median']:>8} ms | "
           f"p95={stats['p95']:>8} ms")
 
-def print_winner(results: dict):
-    best_label = min(results, key=lambda k: results[k]["avg"])
-    print(f"\n  🏆 Nhanh nhất: {best_label} "
-          f"({results[best_label]['avg']} ms avg)")
-    for label, stats in results.items():
-        if label != best_label:
-            ratio = round(stats["avg"] / results[best_label]["avg"], 1)
-            print(f"     {label} chậm hơn {ratio}x")
-
 def divider(title=""):
     if title:
         print(f"\n{'='*70}")
@@ -117,30 +108,19 @@ def bench1_list_restaurants():
     def read_cassandra():
         # Cassandra không có table restaurants
         # Workaround: query customer_activity để lấy danh sách restaurant_id distinct
-        # Đây là cách gần nhất Cassandra có thể làm — không phù hợp cho use case này
         list(cass.execute(
             "SELECT restaurant_id FROM customer_activity WHERE customer_id = %s LIMIT 50",
             (cid_cass,)
         ))
 
     results = {
-        "MongoDB":                    measure(read_mongodb,   repeat=100),
-        "Redis":                      measure(read_redis,     repeat=100),
-        "Cassandra (workaround)":     measure(read_cassandra, repeat=100),
+        "MongoDB":                measure(read_mongodb,   repeat=100),
+        "Redis":                  measure(read_redis,     repeat=100),
+        "Cassandra (workaround)": measure(read_cassandra, repeat=100),
     }
 
     for label, stats in results.items():
         print_result(label, stats)
-    print_winner(results)
-    print(f"""
-  Phân tích:
-  → Redis nhanh nhất vì data nằm trong RAM, không cần I/O
-  → Cassandra không có table restaurants → phải workaround
-    qua customer_activity, kết quả không đầy đủ và không chính xác
-  → Cassandra được thiết kế cho write-heavy time-series,
-    không phải cho query danh sách entity như nhà hàng
-  → Kết luận: MongoDB + Redis cache là lựa chọn đúng đắn
-    """)
 
 
 # ============================================================
@@ -166,7 +146,6 @@ def bench2_view_menu():
     def read_cassandra():
         # Cassandra không có table menu_items
         # Workaround: query customer_activity lấy menu_item_id đã xem
-        # → chỉ lấy được menu item mà customer từng interact, không phải full menu
         list(cass.execute(
             """SELECT menu_item_id, event_type FROM customer_activity
                WHERE customer_id = %s LIMIT 50""",
@@ -181,17 +160,6 @@ def bench2_view_menu():
 
     for label, stats in results.items():
         print_result(label, stats)
-    print_winner(results)
-    count = db.menu_items.count_documents({"restaurant_id": rid})
-    print(f"""
-  Phân tích ({count} món trong menu):
-  → Redis nhanh nhất, menu ít thay đổi → TTL 180s phù hợp
-  → Cassandra workaround chỉ lấy được món đã có activity,
-    không thể trả về full menu → không dùng được cho chức năng này
-  → Cassandra thiếu index theo restaurant_id cho menu_items
-    → ALLOW FILTERING rất chậm trong production
-  → Kết luận: MongoDB + Redis là lựa chọn duy nhất phù hợp
-    """)
 
 
 # ============================================================
@@ -227,12 +195,10 @@ def bench3_add_dish():
         r.delete(f"menu:{rid_str}")
 
     def write_mongodb_redis_cassandra():
-        # Ghi MongoDB + invalidate Redis + log activity vào Cassandra
         result = db.menu_items.insert_one(make_dish())
         inserted_ids.append(result.inserted_id)
         r.delete(f"menu:full:{rid_str}")
         r.delete(f"menu:{rid_str}")
-        # Ghi event "nhà hàng thêm món" vào Cassandra activity log
         cass.execute(stmt_insert_activity, (
             cid_cass,
             datetime.now(timezone.utc),
@@ -244,9 +210,9 @@ def bench3_add_dish():
         ))
 
     results = {
-        "MongoDB":                        measure(write_mongodb,                 repeat=50),
-        "MongoDB + Redis delete":         measure(write_mongodb_redis,           repeat=50),
-        "MongoDB + Redis + Cassandra log": measure(write_mongodb_redis_cassandra, repeat=50),
+        "MongoDB":                         measure(write_mongodb,                  repeat=50),
+        "MongoDB + Redis delete":          measure(write_mongodb_redis,            repeat=50),
+        "MongoDB + Redis + Cassandra log": measure(write_mongodb_redis_cassandra,  repeat=50),
     }
 
     # Cleanup
@@ -255,24 +221,11 @@ def bench3_add_dish():
     for label, stats in results.items():
         print_result(label, stats)
 
-    overhead = round(
-        results["MongoDB + Redis + Cassandra log"]["avg"] /
-        results["MongoDB"]["avg"], 1
-    )
-    print(f"""
-  Phân tích:
-  → Pipeline đầy đủ chậm hơn ~{overhead}x so với chỉ MongoDB
-  → Cassandra log hữu ích để track lịch sử thay đổi menu
-    (khi nào thêm, ai thêm, thêm món gì)
-  → Redis delete đảm bảo customer không thấy menu cũ
-  → Ghi là thao tác 1 lần → overhead chấp nhận được
-    """)
-
 
 # ============================================================
 # BENCHMARK 4: XEM TẤT CẢ ĐƠN HÀNG
 # Chức năng: view_all_orders(restaurant)
-# So sánh: MongoDB vs Redis vs Cassandra
+# So sánh: MongoDB vs Redis vs Cassandra (workaround)
 # ============================================================
 def bench4_view_all_orders():
     divider("BENCHMARK 4: Xem tất cả đơn hàng")
@@ -291,11 +244,9 @@ def bench4_view_all_orders():
 
     def read_cassandra():
         # order_history_by_customer partition theo customer_id
-        # → không thể query theo restaurant_id trực tiếp
         # Workaround: lấy lịch sử đơn của 1 customer, lọc theo restaurant
         rows = list(cass.execute(stmt_read_history, (cid_cass,)))
-        # Lọc theo restaurant trên Python — không scalable
-        [r for r in rows if r.restaurant_name == sample_restaurant.get("name")]
+        [row for row in rows if row.restaurant_name == sample_restaurant.get("name")]
 
     results = {
         "MongoDB":                measure(read_mongodb,   repeat=100),
@@ -305,22 +256,12 @@ def bench4_view_all_orders():
 
     for label, stats in results.items():
         print_result(label, stats)
-    print_winner(results)
-    count = db.orders.count_documents({"restaurant_id": rid})
-    print(f"""
-  Phân tích ({count} đơn):
-  → Cassandra partition theo customer_id, không theo restaurant_id
-    → phải scan nhiều partition rồi filter trên Python
-    → cực kỳ không hiệu quả khi số customer lớn
-  → Redis nhanh nhưng TTL 30s vì đơn thay đổi thường xuyên
-  → MongoDB là lựa chọn phù hợp nhất cho chức năng này
-    """)
 
 
 # ============================================================
 # BENCHMARK 5: LỌC ĐƠN THEO TRẠNG THÁI
 # Chức năng: view_orders_by_status(restaurant)
-# So sánh: MongoDB vs Redis vs Cassandra
+# So sánh: MongoDB vs Redis vs Cassandra (workaround)
 # ============================================================
 def bench5_filter_by_status():
     divider("BENCHMARK 5: Lọc đơn theo trạng thái")
@@ -348,7 +289,7 @@ def bench5_filter_by_status():
             json.loads(data)
 
     def read_cassandra():
-        # Cassandra order_history không có secondary index trên current_status
+        # Cassandra không hỗ trợ filter theo current_status mà không có partition key
         # Workaround: lấy tất cả đơn của customer rồi filter status trên Python
         rows = list(cass.execute(stmt_read_history, (cid_cass,)))
         [row for row in rows if row.current_status == target_status]
@@ -361,18 +302,6 @@ def bench5_filter_by_status():
 
     for label, stats in results.items():
         print_result(label, stats)
-    print_winner(results)
-    count = db.orders.count_documents({
-        "restaurant_id": rid, "current_status": target_status
-    })
-    print(f"""
-  Phân tích ({count} đơn '{target_status}'):
-  → Cassandra không hỗ trợ filter theo current_status mà không có
-    partition key → phải lấy hết rồi filter trên Python
-  → Redis TTL 30s vì status thay đổi liên tục → cache miss nhiều
-  → MongoDB với compound index (restaurant_id, current_status)
-    là lựa chọn đúng đắn nhất cho chức năng này
-    """)
 
 
 # ============================================================
@@ -389,9 +318,9 @@ def bench6_update_order_status():
         print("  ⚠ Không có đơn hàng để test.")
         return
 
-    oid     = test_order["_id"]
-    oid_str = str(oid)
-    orig    = test_order["current_status"]
+    oid      = test_order["_id"]
+    oid_str  = str(oid)
+    orig     = test_order["current_status"]
     oid_cass = uuid.uuid5(uuid.NAMESPACE_OID, oid_str)
 
     r.hset(f"order:status:{oid_str}", mapping={
@@ -426,7 +355,6 @@ def bench6_update_order_status():
         })
 
     def write_mongodb_redis_cassandra():
-        # MongoDB update + Redis sync + Cassandra UPDATE order_history
         new_stat = statuses[idx[0] % len(statuses)]
         idx[0] += 1
         now = datetime.now(timezone.utc)
@@ -438,7 +366,6 @@ def bench6_update_order_status():
             "status":     new_stat,
             "updated_at": now.isoformat(),
         })
-        # Cassandra: ghi lại event status change vào activity log
         cass.execute(stmt_insert_activity, (
             cid_cass,
             now,
@@ -451,8 +378,8 @@ def bench6_update_order_status():
 
     results = {
         "MongoDB":                         measure(write_mongodb,                  repeat=100),
-        "MongoDB + Redis sync":             measure(write_mongodb_redis,            repeat=100),
-        "MongoDB + Redis + Cassandra log":  measure(write_mongodb_redis_cassandra,  repeat=100),
+        "MongoDB + Redis sync":            measure(write_mongodb_redis,            repeat=100),
+        "MongoDB + Redis + Cassandra log": measure(write_mongodb_redis_cassandra,  repeat=100),
     }
 
     # Restore
@@ -461,24 +388,11 @@ def bench6_update_order_status():
     for label, stats in results.items():
         print_result(label, stats)
 
-    overhead = round(
-        results["MongoDB + Redis + Cassandra log"]["avg"] /
-        results["MongoDB"]["avg"], 1
-    )
-    print(f"""
-  Phân tích:
-  → Pipeline đầy đủ chậm hơn ~{overhead}x so với chỉ MongoDB
-  → Cassandra log mỗi lần đổi status → audit trail đầy đủ
-    (biết chính xác lúc nào PLACED → CONFIRMED → PREPARING...)
-  → Redis sync → customer thấy status mới ngay lập tức
-  → Nhà hàng update status ít lần → overhead chấp nhận được
-    """)
-
 
 # ============================================================
 # BENCHMARK 7: THỐNG KÊ TỔNG DOANH THU
 # Chức năng: show_total_income(restaurant)
-# So sánh: MongoDB aggregate vs Redis vs Cassandra
+# So sánh: MongoDB aggregate vs Redis vs Cassandra (workaround)
 # ============================================================
 def bench7_total_income():
     divider("BENCHMARK 7: Thống kê tổng doanh thu")
@@ -520,22 +434,12 @@ def bench7_total_income():
 
     for label, stats in results.items():
         print_result(label, stats)
-    print_winner(results)
-    print(f"""
-  Phân tích:
-  → Cassandra không có aggregation SUM theo restaurant_id
-    → phải kéo toàn bộ data về Python rồi tính → rất kém hiệu quả
-    → trong production với triệu đơn sẽ timeout
-  → Redis cache kết quả aggregate sẵn → nhanh nhất
-  → MongoDB aggregate scan collection nhưng kết quả chính xác
-  → Kết luận: MongoDB tính → cache vào Redis → serve từ Redis
-    """)
 
 
 # ============================================================
 # BENCHMARK 8: DOANH THU THEO KHOẢNG THỜI GIAN
 # Chức năng: show_income_by_interval(restaurant)
-# So sánh: MongoDB aggregate vs Redis vs Cassandra
+# So sánh: MongoDB aggregate vs Redis vs Cassandra (workaround)
 # ============================================================
 def bench8_income_by_interval():
     divider("BENCHMARK 8: Doanh thu theo khoảng thời gian")
@@ -592,7 +496,6 @@ def bench8_income_by_interval():
               AND created_at >= %s
               AND created_at <= %s
         """, (cid_cass, start_date, end_date)))
-        # Group by date trên Python
         from collections import defaultdict
         daily = defaultdict(int)
         for row in rows:
@@ -609,49 +512,6 @@ def bench8_income_by_interval():
 
     for label, stats in results.items():
         print_result(label, stats)
-    print_winner(results)
-    print(f"""
-  Phân tích:
-  → Cassandra hỗ trợ range query theo thời gian (clustering key)
-    nhưng partition key là customer_id → phải query từng customer
-    → không scalable để tổng hợp doanh thu theo restaurant
-  → Redis nhanh nhất vì kết quả group by date đã tính sẵn
-  → MongoDB aggregate chính xác, hỗ trợ query theo restaurant_id
-  → Kết luận: MongoDB tính → cache Redis → TTL dài vì data cũ không đổi
-    """)
-
-
-# ============================================================
-# TỔNG KẾT
-# ============================================================
-def print_summary():
-    divider("TỔNG KẾT — RESTAURANT MANAGEMENT BENCHMARK")
-    print(f"""
-  ┌───────────────────────┬──────────┬───────────┬────────────┬──────────────┐
-  │ Chức năng             │ MongoDB  │ Redis     │ Cassandra  │ Nên dùng     │
-  ├───────────────────────┼──────────┼──────────-┼────────────┼──────────────┤
-  │ Danh sách nhà hàng   │ Chậm hơn │ Nhanh hơn │ ❌ Không   │ Redis        │
-  │ Xem menu              │ Chậm hơn │ Nhanh hơn │ ❌ Không   │ Redis        │
-  │ Thêm món              │ Ghi chính│ Invalidate│ ✅ Log     │ Cả 3         │
-  │ Xem tất cả đơn        │ Phù hợp  │ TTL ngắn  │ ❌ Không   │ MongoDB      │
-  │ Lọc đơn theo status   │ Phù hợp  │ TTL ngắn  │ ❌ Không   │ MongoDB      │
-  │ Cập nhật status       │ Ghi chính│ Sync ngay │ ✅ Log     │ Cả 3         │
-  │ Tổng doanh thu        │ Aggregate│ Nhanh hơn │ ❌ Không   │ MongoDB→Redis│
-  │ Doanh thu theo ngày   │ Aggregate│ Nhanh hơn │ ❌ Không   │ MongoDB→Redis│
-  └───────────────────────┴──────────┴───────────┴────────────┴──────────────┘
-
-  Cassandra phù hợp trong project này cho:
-  ✅ Ghi activity log (thêm món, đổi status) — append-only, volume lớn
-  ✅ Lịch sử đơn của customer — partition theo customer_id
-  ❌ Query theo restaurant_id — sai partition key
-  ❌ Aggregate SUM/GROUP BY — Cassandra không hỗ trợ tốt
-  ❌ Danh sách entity (nhà hàng, menu) — không phải use case của Cassandra
-
-  Kết luận:
-  → MongoDB: source of truth, query linh hoạt theo restaurant
-  → Redis: cache đọc nhiều (menu, danh sách, thống kê)
-  → Cassandra: log sự kiện ghi (status changes, menu changes)
-    """)
 
 
 # ============================================================
@@ -670,6 +530,5 @@ if __name__ == "__main__":
     bench6_update_order_status()
     bench7_total_income()
     bench8_income_by_interval()
-    print_summary()
 
     print("\n✅ Benchmark hoàn tất!\n")

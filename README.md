@@ -17,15 +17,30 @@ docker exec food_cassandra cqlsh -e "describe keyspaces"
 # Nên sử dụng python version 3.11 trở xuống (bản python 3.13 cassandra cluster chưa hỗ trợ)
 python -m venv venv
 venv\Scripts\activate
-pip install pymongo cassandra-driver redis faker
+pip install pymongo cassandra-driver redis faker neo4j
 
         # Bước 4: Chạy các file trong đồ án
 
-# Tạo schema cho các database
-python schema.py
-# Tạo dữ liệu giả để chạy test + đo benchmark
+# Tạo schema cho database
+python Schema.py
+pyhton user_activity_graph.py
+
+# Tạo data với lượng nhỏ
 python gen_data.py
-# Chạy các chức năng đã cài đặt
-python demo_queries.py
-# Chạy benchmark để đo tốc độ đọc/ghi các database đã chọn so với loại nosql khác
-python benchmark.py
+# Tạo data với lượng lớn
+python new_gen.py
+
+# Chạy các file
+python customer.py
+python restaurant.py
+python recommendation.py
+
+# Test benchmark
+python customer_benchmark.py
+python restaurant_benchmark.py
+graph_benchmark.py 
+
+
+
+
+
