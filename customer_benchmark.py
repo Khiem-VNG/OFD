@@ -39,15 +39,6 @@ def print_result(label, stats):
           f"median={stats['median']:>8} ms | "
           f"p95={stats['p95']:>8} ms")
 
-def print_winner(results: dict):
-    best_label = min(results, key=lambda k: results[k]["avg"])
-    print(f"\n  🏆 Nhanh nhất: {best_label} "
-          f"({results[best_label]['avg']} ms avg)")
-    for label, stats in results.items():
-        if label != best_label:
-            ratio = round(stats["avg"] / results[best_label]["avg"], 1)
-            print(f"     {label} chậm hơn {ratio}x")
-
 def divider(title=""):
     if title:
         print(f"\n{'='*65}")
@@ -113,24 +104,14 @@ def bench1_read_menu():
         ))
 
     results = {
-        "MongoDB trực tiếp":    measure(read_mongodb_only,    repeat=100),
-        "Redis cache (hiện tại)": measure(read_redis_cache,   repeat=100),
-        "MongoDB không index":  measure(read_mongodb_no_index, repeat=100),
+        "MongoDB trực tiếp":      measure(read_mongodb_only,        repeat=100),
+        "Redis cache (hiện tại)": measure(read_redis_cache,         repeat=100),
+        "MongoDB không index":    measure(read_mongodb_no_index,    repeat=100),
+        "Cassandra (workaround)": measure(read_cassandra_workaround, repeat=100),
     }
 
     for label, stats in results.items():
         print_result(label, stats)
-
-    print_winner(results)
-    print(f"""
-  Phân tích:
-  → Redis cache nhanh hơn MongoDB vì dữ liệu nằm trong RAM
-  → Menu ít thay đổi (TTL 300s) nên cache rất hiệu quả
-  → Mỗi lần customer mở trang nhà hàng đều đọc menu
-    → Redis giảm tải MongoDB đáng kể khi nhiều user đồng thời
-  → Cassandra không phù hợp cho query theo restaurant_id
-    vì thiết kế partition key theo customer, không theo restaurant
-    """)
 
 
 # ============================================================
@@ -183,35 +164,6 @@ def bench2_write_activity():
         winner  = "MongoDB" if m_stats["avg"] < c_stats["avg"] else "Cassandra ✓"
         print(f"  {n:>6} | {m_stats['avg']:>14} | {c_stats['avg']:>14} | {winner:>12}")
 
-    print(f"""
-  ⚠️  Lưu ý kết quả benchmark này:
-
-  Môi trường test (single node Docker local):
-  → Cassandra có overhead kết nối lớn hơn MongoDB
-  → Kết quả MongoDB có thể nhanh hơn Cassandra ở đây
-  → Đây KHÔNG phản ánh production thực tế
-
-  Lý do vẫn chọn Cassandra cho activity log:
-
-  1. VOLUME: Production ghi hàng triệu events/ngày
-     → Cassandra LSM tree không cần random I/O
-     → MongoDB B-tree cần random I/O khi data lớn
-
-  2. SCALE: Cassandra scale linear khi add node
-     → Thêm node = tăng write throughput tuyến tính
-     → MongoDB sharding phức tạp hơn
-
-  3. TTL BUILT-IN: Cassandra tự xóa data sau 90 ngày
-     → MongoDB cần TTL index + background job
-
-  4. APPEND-ONLY: Activity log không bao giờ UPDATE/DELETE
-     → Đúng với write pattern của Cassandra
-     → MongoDB tối ưu cho cả read/write/update
-
-  Kết luận: Cassandra phù hợp hơn về kiến trúc dài hạn
-  dù benchmark local không thể hiện rõ sự chênh lệch
-    """)
-
 
 # ============================================================
 # BENCHMARK 3: LẤY LỊCH SỬ ĐƠN HÀNG
@@ -222,7 +174,6 @@ def bench3_order_history():
     divider("BENCHMARK 3: Lấy lịch sử đơn hàng")
     print("  Scenario: Customer vào xem danh sách đơn hàng\n")
 
-    # Đếm số đơn hiện có
     order_count = db.orders.count_documents({"customer_id": cid_mongo})
     print(f"  Số đơn của customer này: {order_count}\n")
 
@@ -252,56 +203,16 @@ def bench3_order_history():
     for label, stats in results.items():
         print_result(label, stats)
 
-    print_winner(results)
-    print(f"""
-  ⚠️  Lưu ý kết quả benchmark này:
-
-  Môi trường test: chỉ có {order_count} đơn/customer, data nhỏ
-  → MongoDB index B-tree rất nhanh với data nhỏ
-  → Cassandra overhead kết nối chiếm phần lớn thời gian đo
-
-  Sự khác biệt thực sự xuất hiện khi:
-
-  Data nhỏ  (<10K orders/customer):
-  → MongoDB nhanh hơn hoặc tương đương Cassandra
-  → Cả hai đều chấp nhận được
-
-  Data lớn  (>1M orders/customer — production thực tế):
-  → Cassandra: thời gian đọc gần như KHÔNG ĐỔI
-    vì tất cả data nằm trên 1 partition node
-  → MongoDB: thời gian tăng dần do index B-tree
-    phải traverse nhiều tầng hơn
-
-  Lý do vẫn chọn Cassandra cho order_history:
-
-  1. PARTITION KEY = customer_id
-     → Toàn bộ lịch sử 1 customer nằm trên 1 node
-     → Không cần scatter-gather như MongoDB sharding
-
-  2. SORT SẴN: clustering key = created_at DESC
-     → Cassandra trả về đã sort, không cần sort sau
-     → MongoDB cần index (customer_id, created_at) để sort
-
-  3. TÁCH BIỆT WORKLOAD:
-     → Cassandra xử lý read lịch sử (volume lớn)
-     → MongoDB xử lý business logic (order detail, review)
-     → Giảm tải cho MongoDB
-
-  Kết luận: Với data test nhỏ kết quả tương đương,
-  nhưng Cassandra scale tốt hơn ở production
-    """)
-
 
 # ============================================================
 # BENCHMARK 4: TRẠNG THÁI ĐƠN REAL-TIME
 # Scenario: Customer theo dõi trạng thái đơn đang giao
-# So sánh: MongoDB vs Redis (thiết kế hiện tại)
+# So sánh: MongoDB vs Redis (thiết kế hiện tại) vs Cassandra
 # ============================================================
 def bench4_order_status_realtime():
     divider("BENCHMARK 4: Theo dõi trạng thái đơn real-time")
     print("  Scenario: Customer refresh xem đơn đang ở bước nào\n")
 
-    # Chuẩn bị data
     oid_str = str(sample_order["_id"]) if sample_order else str(ObjectId())
     r.hset(f"order:status:{oid_str}", mapping={
         "status":      "DELIVERING",
@@ -334,24 +245,13 @@ def bench4_order_status_realtime():
         """, (cid_cass,)))
 
     results = {
-        "MongoDB":               measure(read_mongo_status, repeat=200),
-        "Redis (hiện tại)":      measure(read_redis_status, repeat=200),
-        "Cassandra (workaround)": measure(read_cass_status, repeat=200),
+        "MongoDB":                measure(read_mongo_status, repeat=200),
+        "Redis (hiện tại)":       measure(read_redis_status, repeat=200),
+        "Cassandra (workaround)": measure(read_cass_status,  repeat=200),
     }
 
     for label, stats in results.items():
         print_result(label, stats)
-
-    print_winner(results)
-    print(f"""
-  Phân tích:
-  → Redis nhanh nhất cho point lookup — in-memory, O(1)
-  → Customer refresh trạng thái liên tục khi đơn đang giao
-    → Redis giảm tải MongoDB cực kỳ hiệu quả
-  → TTL 2 giờ: đủ cho 1 chuyến giao hàng, tự xóa sau đó
-  → Cassandra không phù hợp cho real-time status tracking
-    vì phải query qua partition key, không phải order_id
-    """)
 
 
 # ============================================================
@@ -438,32 +338,18 @@ def bench5_create_order():
         r.delete(f"order:status:{oid}")
 
     results = {
-        "Chỉ MongoDB":                   measure(create_mongo_only,    repeat=50),
-        "MongoDB+Redis+Cassandra (hiện tại)": measure(create_full_pipeline, repeat=50),
+        "Chỉ MongoDB":                        measure(create_mongo_only,    repeat=50),
+        "MongoDB + Redis + Cassandra (hiện tại)": measure(create_full_pipeline, repeat=50),
     }
 
     for label, stats in results.items():
         print_result(label, stats)
 
-    overhead = round(
-        results["MongoDB+Redis+Cassandra (hiện tại)"]["avg"] /
-        results["Chỉ MongoDB"]["avg"], 1
-    )
-    print(f"""
-  Phân tích:
-  → Pipeline đầy đủ chậm hơn ~{overhead}x so với chỉ MongoDB
-  → Đây là chi phí chấp nhận được vì đổi lại:
-     - Redis: đọc status nhanh hơn 5-10x về sau
-     - Cassandra: lịch sử đơn scale tốt khi data lớn
-  → Tạo đơn là thao tác 1 lần, đọc trạng thái là nhiều lần
-    → trade-off hợp lý
-    """)
-
 
 # ============================================================
 # BENCHMARK 6: MỞ RỘNG SCHEMA
 # Scenario: Thêm thuộc tính mới vào menu_items
-# So sánh: MongoDB (NoSQL) vs mô phỏng SQL ALTER TABLE
+# So sánh: MongoDB update_many vs SQL-style row by row
 # ============================================================
 def bench6_schema_flexibility():
     divider("BENCHMARK 6: Khả năng mở rộng schema")
@@ -485,8 +371,6 @@ def bench6_schema_flexibility():
 
     # Mô phỏng SQL: phải update từng row (không có ALTER ADD COLUMN tức thì)
     def simulate_sql_migration():
-        # SQL cần: ALTER TABLE + UPDATE tất cả rows
-        # Mô phỏng bằng cách update từng document riêng lẻ
         items = list(db.menu_items.find({"category": "main"}, {"_id": 1}))
         for item in items:
             db.menu_items.update_one(
@@ -500,49 +384,12 @@ def bench6_schema_flexibility():
         )
 
     results = {
-        f"MongoDB update_many ({count} docs)": measure(mongo_add_field,      repeat=20),
+        f"MongoDB update_many ({count} docs)":  measure(mongo_add_field,       repeat=20),
         f"SQL-style row by row ({count} rows)": measure(simulate_sql_migration, repeat=20),
     }
 
     for label, stats in results.items():
         print_result(label, stats)
-
-    print_winner(results)
-    print(f"""
-  Phân tích:
-  → MongoDB update_many nhanh hơn vì dùng bulk operation
-  → SQL-style phải lock table trong ALTER TABLE (downtime)
-  → MongoDB không cần migration, field mới tồn tại song song
-    với documents cũ không có field đó → zero downtime
-  → Trong food delivery: thêm field như 'is_spicy', 'allergens'
-    rất phổ biến → MongoDB linh hoạt hơn nhiều
-    """)
-
-
-# ============================================================
-# TỔNG KẾT
-# ============================================================
-def print_summary():
-    divider("TỔNG KẾT — LÝ DO CHỌN KIẾN TRÚC HIỆN TẠI")
-    print(f"""
-  ┌─────────────────┬─────────────────┬──────────────────────┐
-  │ Chức năng       │ DB dùng         │ Lý do                │
-  ├─────────────────┼─────────────────┼──────────────────────┤
-  │ Đọc menu        │ Redis cache     │ Nhanh hơn 2-5x       │
-  │ Ghi activity    │ Cassandra       │ Scale write-heavy    │
-  │ Lịch sử đơn     │ Cassandra       │ Partition by user    │
-  │ Status realtime │ Redis           │ In-memory O(1)       │
-  │ Tạo đơn/review  │ MongoDB         │ Source of truth      │
-  │ Mở rộng schema  │ MongoDB         │ Zero downtime        │
-  └─────────────────┴─────────────────┴──────────────────────┘
-
-  Kết luận:
-  → Không có DB nào tốt nhất cho tất cả use case
-  → Kiến trúc đa DB (polyglot persistence) tận dụng
-    thế mạnh của từng loại
-  → MongoDB làm nền tảng, Redis tăng tốc đọc,
-    Cassandra xử lý write-heavy time-series
-    """)
 
 
 # ============================================================
@@ -559,6 +406,5 @@ if __name__ == "__main__":
     bench4_order_status_realtime()
     bench5_create_order()
     bench6_schema_flexibility()
-    print_summary()
 
     print("\n✅ Benchmark hoàn tất!\n")
